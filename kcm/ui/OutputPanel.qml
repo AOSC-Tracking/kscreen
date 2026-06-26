@@ -36,17 +36,17 @@ Kirigami.FormLayout {
     }
 
     RowLayout {
-        visible: kcm.primaryOutputSupported && root.enabledOutputs.count >= 2
+        visible: kcm.primaryOutputSupported
 
         QQC2.Button {
-            visible: root.enabledOutputs.count >= 3
+            visible: true
             text: i18n("Change Screen Priorities…")
             icon.name: "document-edit"
             onClicked: root.reorder();
         }
 
         QQC2.RadioButton {
-            visible: root.enabledOutputs.count === 2
+            visible: true
             text: i18n("Primary")
             checked: element.priority === 1
             onToggled: element.priority = 1

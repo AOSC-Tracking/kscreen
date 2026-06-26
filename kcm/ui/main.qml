@@ -378,7 +378,7 @@ KCM.AbstractKCM {
                 }
             }
 
-            visible: kcm.multipleScreensAvailable
+            visible: true
 
             ScreenView {
                 id: screen
