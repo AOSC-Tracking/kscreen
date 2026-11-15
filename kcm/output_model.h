@@ -174,6 +174,7 @@ private:
     QVariantList replicationSourceModelWithNumbers(const KScreen::OutputPtr &output) const;
     bool setReplicationSourceIndex(int outputIndex, int sourceIndex);
     int replicationSourceIndex(int outputIndex) const;
+    int replicationSourceId(const Output &output) const;
 
     QVariantList replicasModel(const KScreen::OutputPtr &output) const;
 

@@ -28,6 +28,7 @@
 #include <QDBusConnection>
 #include <QDBusMessage>
 #include <QDBusPendingReply>
+#include <QGuiApplication>
 #include <QProcess>
 #include <QSortFilterProxyModel>
 #include <QTimer>
@@ -65,6 +66,7 @@ KCMKScreen::KCMKScreen(QObject *parent, const KPluginMetaData &data)
     connect(KScreen::ConfigMonitor::instance(), &KScreen::ConfigMonitor::configurationChanged, this, &KCMKScreen::updateFromBackend);
 
     registerSettings(GlobalScaleSettings::self());
+    connect(GlobalScaleSettings::self(), &GlobalScaleSettings::scaleFactorChanged, this, &KCMKScreen::globalScaleChanged);
 
     registerSettings(KWinCompositingSetting::self());
     connect(KWinCompositingSetting::self(), &KWinCompositingSetting::allowTearingChanged, this, &KCMKScreen::tearingAllowedChanged);
@@ -88,6 +90,8 @@ void KCMKScreen::configReady(ConfigOperation *op)
 
     setBackendReady(true);
     checkConfig();
+    Q_EMIT xwaylandClientsScaleSupportedChanged();
+    Q_EMIT tearingSupportedChanged();
     Q_EMIT tabletModeAvailableChanged();
     Q_EMIT autoRotationSupportedChanged();
 }
@@ -110,6 +114,15 @@ void KCMKScreen::revertSettings()
         Q_EMIT settingsReverted();
         m_stopUpdatesFromBackend = false;
     }
+}
+
+void KCMKScreen::requestReboot()
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(QStringLiteral("org.kde.LogoutPrompt"),
+                                                      QStringLiteral("/LogoutPrompt"),
+                                                      QStringLiteral("org.kde.LogoutPrompt"),
+                                                      QStringLiteral("promptReboot"));
+    QDBusConnection::sessionBus().asyncCall(msg);
 }
 
 void KCMKScreen::setStopUpdatesFromBackend(bool value)
@@ -144,7 +157,7 @@ void KCMKScreen::doSave()
                              << "\tMode:" << (mode ? mode->name() : QStringLiteral("unknown")) << "@" << (mode ? mode->refreshRate() : 0.0) << "Hz"
                              << "\n"
                              << "\tPosition:" << output->pos().x() << "x" << output->pos().y() << "\n"
-                             << "\tScale:" << QString::number(output->scale()) << "\n"
+                             << "\tScale:" << (perOutputScaling() ? QString::number(output->scale()) : QStringLiteral("global")) << "\n"
                              << "\tReplicates:" << (output->replicationSource() == 0 ? "no" : "yes");
     }
 
@@ -156,7 +169,12 @@ void KCMKScreen::doSave()
         return;
     }
 
+    const bool globalScaleChanged = !perOutputScaling() && GlobalScaleSettings::self()->isSaveNeeded();
     KQuickManagedConfigModule::save();
+    if (globalScaleChanged) {
+        exportGlobalScale();
+    }
+
     m_configHandler->prepareForSave();
 
     // Store the current config, apply settings. Block until operation is
@@ -289,6 +307,8 @@ void KCMKScreen::load()
     m_configHandler.reset(new ConfigHandler(this));
     m_outputProxyModel->setSourceModel(m_configHandler->outputModel());
 
+    Q_EMIT xwaylandClientsScaleSupportedChanged();
+    Q_EMIT tearingSupportedChanged();
     Q_EMIT tearingAllowedChanged();
 
     connect(m_configHandler.get(), &ConfigHandler::outputModelChanged, this, [this]() {
@@ -361,6 +381,86 @@ bool KCMKScreen::isSaveNeeded() const
     return m_configNeedsSave;
 }
 
+bool KCMKScreen::perOutputScaling() const
+{
+    return QGuiApplication::platformName() != QLatin1String("xcb");
+}
+
+void KCMKScreen::exportGlobalScale()
+{
+    // Write env var to be used by session startup scripts to populate the QT_SCREEN_SCALE_FACTORS
+    // env var.
+    // We use QT_SCREEN_SCALE_FACTORS as opposed to QT_SCALE_FACTOR as we need to use one that will
+    // NOT scale fonts according to the scale.
+    // Scaling the fonts makes sense if you don't also set a font DPI, but we NEED to set a font
+    // DPI for both PlasmaShell which does it's own thing, and for KDE4/GTK2 applications.
+    QString screenFactors;
+    const auto outputs = m_configHandler->config()->outputs();
+    for (const auto &output : outputs) {
+        screenFactors.append(output->name() + QLatin1Char('=') + QString::number(globalScale()) + QLatin1Char(';'));
+    }
+    auto config = KSharedConfig::openConfig("kdeglobals");
+    config->group("KScreen").writeEntry("ScreenScaleFactors", screenFactors);
+    config->sync();
+
+    KConfig fontConfig(QStringLiteral("kcmfonts"));
+    auto fontConfigGroup = fontConfig.group("General");
+
+    if (qFuzzyCompare(globalScale(), 1.0)) {
+        // if dpi is the default (96) remove the entry rather than setting it
+        QProcess queryProc;
+        queryProc.start(QStringLiteral("xrdb"), {QStringLiteral("-query")});
+        if (queryProc.waitForFinished()) {
+            QByteArray db = queryProc.readAllStandardOutput();
+            int idx1 = 0;
+            while (idx1 < db.size()) {
+                int idx2 = db.indexOf('\n', idx1);
+                if (idx2 == -1) {
+                    idx2 = db.size() - 1;
+                }
+                const auto entry = QByteArray::fromRawData(db.constData() + idx1, idx2 - idx1 + 1);
+                if (entry.startsWith("Xft.dpi:")) {
+                    db.remove(idx1, entry.size());
+                } else {
+                    idx1 = idx2 + 1;
+                }
+            }
+
+            QProcess loadProc;
+            loadProc.start(QStringLiteral("xrdb"), {QStringLiteral("-quiet"), QStringLiteral("-load"), QStringLiteral("-nocpp")});
+            if (loadProc.waitForStarted()) {
+                loadProc.write(db);
+                loadProc.closeWriteChannel();
+                loadProc.waitForFinished();
+            }
+        }
+        fontConfigGroup.writeEntry("forceFontDPI", 0, KConfig::Notify);
+    } else {
+        const int scaleDpi = qRound(globalScale() * 96.0);
+        QProcess proc;
+        proc.start(QStringLiteral("xrdb"), {QStringLiteral("-quiet"), QStringLiteral("-merge"), QStringLiteral("-nocpp")});
+        if (proc.waitForStarted()) {
+            proc.write(QByteArray("Xft.dpi: ") + QByteArray::number(scaleDpi));
+            proc.closeWriteChannel();
+            proc.waitForFinished();
+        }
+        fontConfigGroup.writeEntry("forceFontDPI", scaleDpi, KConfig::Notify);
+    }
+
+    Q_EMIT globalScaleWritten();
+}
+
+qreal KCMKScreen::globalScale() const
+{
+    return GlobalScaleSettings::self()->scaleFactor();
+}
+
+void KCMKScreen::setGlobalScale(qreal scale)
+{
+    GlobalScaleSettings::self()->setScaleFactor(scale);
+    Q_EMIT changed();
+}
+
 bool KCMKScreen::xwaylandClientsScale() const
 {
     return GlobalScaleSettings::self()->xwaylandClientsScale();
@@ -370,6 +470,14 @@ void KCMKScreen::setXwaylandClientsScale(bool scale)
 {
     GlobalScaleSettings::self()->setXwaylandClientsScale(scale);
     Q_EMIT changed();
+}
+
+bool KCMKScreen::xwaylandClientsScaleSupported() const
+{
+    if (!m_configHandler || !m_configHandler->config()) {
+        return false;
+    }
+    return m_configHandler->config()->supportedFeatures().testFlag(Config::Feature::XwaylandScales);
 }
 
 void KCMKScreen::setAllowTearing(bool allow)
@@ -385,6 +493,14 @@ void KCMKScreen::setAllowTearing(bool allow)
 bool KCMKScreen::allowTearing() const
 {
     return KWinCompositingSetting::self()->allowTearing();
+}
+
+bool KCMKScreen::tearingSupported() const
+{
+    if (!m_configHandler || !m_configHandler->config()) {
+        return false;
+    }
+    return m_configHandler->config()->supportedFeatures().testFlag(Config::Feature::XwaylandScales);
 }
 
 bool KCMKScreen::multipleScreensAvailable() const

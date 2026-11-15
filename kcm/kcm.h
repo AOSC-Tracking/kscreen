@@ -29,6 +29,10 @@ class KCMKScreen : public KQuickManagedConfigModule
     Q_PROPERTY(QAbstractItemModel *outputModel READ outputModel CONSTANT)
     Q_PROPERTY(bool backendReady READ backendReady NOTIFY backendReadyChanged)
     Q_PROPERTY(bool screenNormalized READ screenNormalized NOTIFY screenNormalizedChanged)
+    Q_PROPERTY(bool perOutputScaling READ perOutputScaling CONSTANT)
+    Q_PROPERTY(bool xwaylandClientsScaleSupported READ xwaylandClientsScaleSupported NOTIFY xwaylandClientsScaleSupportedChanged)
+    Q_PROPERTY(bool tearingSupported READ tearingSupported NOTIFY tearingSupportedChanged)
+    Q_PROPERTY(qreal globalScale READ globalScale WRITE setGlobalScale NOTIFY globalScaleChanged)
     Q_PROPERTY(bool tabletModeAvailable READ tabletModeAvailable NOTIFY tabletModeAvailableChanged)
     Q_PROPERTY(bool xwaylandClientsScale READ xwaylandClientsScale WRITE setXwaylandClientsScale NOTIFY xwaylandClientsScaleChanged)
     Q_PROPERTY(bool tearingAllowed READ allowTearing WRITE setAllowTearing NOTIFY tearingAllowedChanged)
@@ -58,11 +62,18 @@ public:
     Q_INVOKABLE QSize normalizeScreen() const;
     bool screenNormalized() const;
 
+    bool perOutputScaling() const;
+
+    qreal globalScale() const;
+    void setGlobalScale(qreal scale);
+
     bool xwaylandClientsScale() const;
     void setXwaylandClientsScale(bool scale);
+    bool xwaylandClientsScaleSupported() const;
 
     void setAllowTearing(bool allow);
     bool allowTearing() const;
+    bool tearingSupported() const;
 
     bool tabletModeAvailable() const;
 
@@ -70,6 +81,7 @@ public:
 
     void doSave();
     Q_INVOKABLE void revertSettings();
+    Q_INVOKABLE void requestReboot();
 
     Q_INVOKABLE void setStopUpdatesFromBackend(bool value);
     Q_INVOKABLE void updateFromBackend();
@@ -81,21 +93,27 @@ Q_SIGNALS:
     void backendError();
     void changed();
     void screenNormalizedChanged();
+    void globalScaleChanged();
     void autoRotationSupportedChanged();
     void orientationSensorAvailableChanged();
     void tabletModeAvailableChanged();
     void invalidConfig(InvalidConfigReason reason);
     void errorOnSave(const QString &errorReason);
+    void globalScaleWritten();
     void outputConnect(bool connected);
     void settingsReverted();
     void showRevertWarning();
     void xwaylandClientsScaleChanged();
+    void xwaylandClientsScaleSupportedChanged();
+    void tearingSupportedChanged();
     void tearingAllowedChanged();
     void multipleScreensAvailableChanged();
 
 private:
     void setBackendReady(bool error);
     void setScreenNormalized(bool normalized);
+
+    void exportGlobalScale();
 
     void configReady(KScreen::ConfigOperation *op);
     void continueNeedsSaveCheck(bool needs);
